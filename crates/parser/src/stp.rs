@@ -213,3 +213,249 @@ pub fn parse_bpdu(data: &[u8], sender_mac: [u8; 6], vlan_id: Option<u16>) -> Opt
         is_rstp,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── helpers ───────────────────────────────────────────────────────────────
+
+    fn make_bridge_id_bytes(priority: u16, mac: [u8; 6]) -> Vec<u8> {
+        let mut v = vec![0u8; 8];
+        v[0] = (priority >> 8) as u8;
+        v[1] = (priority & 0xff) as u8;
+        v[2..8].copy_from_slice(&mac);
+        v
+    }
+
+    fn make_rst_bpdu(
+        root_priority: u16, root_mac: [u8; 6],
+        root_cost: u32,
+        bridge_priority: u16, bridge_mac: [u8; 6],
+        port_id: u16,
+        flags: u8,
+    ) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&[0x00, 0x00]); // Protocol ID
+        b.push(0x02);                        // Version: RSTP
+        b.push(0x02);                        // Type: RST BPDU
+        b.push(flags);
+        b.extend_from_slice(&make_bridge_id_bytes(root_priority, root_mac));
+        b.extend_from_slice(&root_cost.to_be_bytes());
+        b.extend_from_slice(&make_bridge_id_bytes(bridge_priority, bridge_mac));
+        b.extend_from_slice(&port_id.to_be_bytes());
+        b.extend_from_slice(&512u16.to_be_bytes());  // message_age
+        b.extend_from_slice(&5120u16.to_be_bytes()); // max_age
+        b.extend_from_slice(&512u16.to_be_bytes());  // hello_time
+        b.extend_from_slice(&3840u16.to_be_bytes()); // fwd_delay
+        b.push(0x00);                                // version1_length
+        b
+    }
+
+    fn make_tcn_bpdu() -> Vec<u8> {
+        vec![0x00, 0x00, 0x00, 0x80]
+    }
+
+    fn make_config_bpdu(
+        root_priority: u16, root_mac: [u8; 6],
+        root_cost: u32,
+        bridge_priority: u16, bridge_mac: [u8; 6],
+        port_id: u16,
+        flags: u8,
+    ) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&[0x00, 0x00]); // Protocol ID
+        b.push(0x00);                        // Version: STP
+        b.push(0x00);                        // Type: Config
+        b.push(flags);
+        b.extend_from_slice(&make_bridge_id_bytes(root_priority, root_mac));
+        b.extend_from_slice(&root_cost.to_be_bytes());
+        b.extend_from_slice(&make_bridge_id_bytes(bridge_priority, bridge_mac));
+        b.extend_from_slice(&port_id.to_be_bytes());
+        b.extend_from_slice(&512u16.to_be_bytes());
+        b.extend_from_slice(&5120u16.to_be_bytes());
+        b.extend_from_slice(&512u16.to_be_bytes());
+        b.extend_from_slice(&3840u16.to_be_bytes());
+        b
+    }
+
+    const MAC_A: [u8; 6] = [0x00, 0x11, 0x22, 0x33, 0x44, 0x01];
+    const MAC_B: [u8; 6] = [0x00, 0x11, 0x22, 0x33, 0x44, 0x02];
+
+    // ── parse_bpdu ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_rst_bpdu_basic() {
+        let data = make_rst_bpdu(4096, MAC_A, 0, 4096, MAC_A, 0x8001, 0x3c);
+        let bpdu = parse_bpdu(&data, MAC_A, None).expect("should parse");
+        assert_eq!(bpdu.bpdu_type, BpduType::RstBpdu);
+        assert!(bpdu.is_rstp);
+        assert_eq!(bpdu.root_id.bridge_priority(), 4096);
+        assert_eq!(bpdu.root_id.mac, MAC_A);
+        assert_eq!(bpdu.root_path_cost, 0);
+        assert_eq!(bpdu.port_id, 0x8001);
+    }
+
+    #[test]
+    fn test_parse_config_bpdu() {
+        let data = make_config_bpdu(4096, MAC_A, 0, 8192, MAC_B, 0x8002, 0x00);
+        let bpdu = parse_bpdu(&data, MAC_B, None).expect("should parse");
+        assert_eq!(bpdu.bpdu_type, BpduType::ConfigBpdu);
+        assert!(!bpdu.is_rstp);
+        assert_eq!(bpdu.bridge_id.bridge_priority(), 8192);
+        assert_eq!(bpdu.bridge_id.mac, MAC_B);
+    }
+
+    #[test]
+    fn test_parse_tcn_bpdu() {
+        let data = make_tcn_bpdu();
+        let bpdu = parse_bpdu(&data, MAC_A, None).expect("should parse TCN");
+        assert_eq!(bpdu.bpdu_type, BpduType::TcnBpdu);
+    }
+
+    #[test]
+    fn test_parse_bpdu_too_short_returns_none() {
+        let data = vec![0x00, 0x00, 0x02]; // 3 bytes, too short
+        assert!(parse_bpdu(&data, MAC_A, None).is_none());
+    }
+
+    #[test]
+    fn test_parse_bpdu_wrong_protocol_id() {
+        let mut data = make_rst_bpdu(4096, MAC_A, 0, 4096, MAC_A, 0x8001, 0x3c);
+        data[0] = 0x01; // Protocol ID != 0x0000
+        assert!(parse_bpdu(&data, MAC_A, None).is_none());
+    }
+
+    #[test]
+    fn test_parse_bpdu_unknown_type() {
+        let data = vec![0x00, 0x00, 0x00, 0x42]; // unknown type 0x42
+        assert!(parse_bpdu(&data, MAC_A, None).is_none());
+    }
+
+    #[test]
+    fn test_vlan_id_preserved() {
+        let data = make_rst_bpdu(4096, MAC_A, 0, 4096, MAC_A, 0x8001, 0x3c);
+        let bpdu = parse_bpdu(&data, MAC_A, Some(10)).expect("should parse");
+        assert_eq!(bpdu.vlan_id, Some(10));
+    }
+
+    // ── BridgeId ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_bridge_id_priority_extraction() {
+        let bid = BridgeId { priority: 0x1000, mac: MAC_A }; // 4096
+        assert_eq!(bid.bridge_priority(), 4096);
+        assert_eq!(bid.sys_id_ext(), 0);
+    }
+
+    #[test]
+    fn test_bridge_id_sys_id_ext_pvst() {
+        // PVST+: priority field encodes VLAN in lower 12 bits
+        // priority=0x100A → priority=4096, sys_id_ext=10 (VLAN 10)
+        let bid = BridgeId { priority: 0x100A, mac: MAC_A };
+        assert_eq!(bid.bridge_priority(), 4096);
+        assert_eq!(bid.sys_id_ext(), 10);
+    }
+
+    #[test]
+    fn test_bridge_id_to_u64_ordering() {
+        // Lower u64 = better (wins election)
+        let better = BridgeId { priority: 4096, mac: MAC_A };
+        let worse  = BridgeId { priority: 8192, mac: MAC_A };
+        assert!(better.to_u64() < worse.to_u64());
+    }
+
+    #[test]
+    fn test_bridge_id_mac_tiebreak() {
+        let lower_mac = BridgeId { priority: 4096, mac: [0x00, 0x11, 0x22, 0x33, 0x44, 0x01] };
+        let higher_mac= BridgeId { priority: 4096, mac: [0x00, 0x11, 0x22, 0x33, 0x44, 0x02] };
+        assert!(lower_mac.to_u64() < higher_mac.to_u64());
+    }
+
+    #[test]
+    fn test_bridge_id_mac_str() {
+        let bid = BridgeId { priority: 4096, mac: MAC_A };
+        assert_eq!(bid.mac_str(), "00:11:22:33:44:01");
+    }
+
+    #[test]
+    fn test_bridge_id_to_string() {
+        let bid = BridgeId { priority: 4096, mac: MAC_A };
+        assert_eq!(bid.to_string(), "4096/00:11:22:33:44:01");
+    }
+
+    // ── BpduFlags ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_flags_tc_bit() {
+        let f = BpduFlags::from_byte(0x01);
+        assert!(f.tc);
+        assert!(!f.proposal);
+        assert!(!f.tc_ack);
+    }
+
+    #[test]
+    fn test_flags_forwarding_learning() {
+        // 0x3c = 0b00111100 = forwarding(5) | learning(4) | designated_role(3:2)
+        let f = BpduFlags::from_byte(0x3c);
+        assert!(f.forwarding);
+        assert!(f.learning);
+        assert!(!f.tc);
+        assert_eq!(f.port_role, PortRole::Designated);
+    }
+
+    #[test]
+    fn test_flags_root_port_role() {
+        // bits 2-3 = 0b10 → Root
+        let f = BpduFlags::from_byte(0x08); // 0b00001000
+        assert_eq!(f.port_role, PortRole::Root);
+    }
+
+    #[test]
+    fn test_flags_alternate_backup_role() {
+        let f = BpduFlags::from_byte(0x04); // bits 2-3 = 0b01
+        assert_eq!(f.port_role, PortRole::AlternateBackup);
+    }
+
+    #[test]
+    fn test_flags_tc_ack() {
+        let f = BpduFlags::from_byte(0x80);
+        assert!(f.tc_ack);
+        assert!(!f.tc);
+    }
+
+    // ── is_root_bridge ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_is_root_bridge_true() {
+        let data = make_rst_bpdu(4096, MAC_A, 0, 4096, MAC_A, 0x8001, 0x3c);
+        let bpdu = parse_bpdu(&data, MAC_A, None).unwrap();
+        assert!(bpdu.is_root_bridge());
+    }
+
+    #[test]
+    fn test_is_root_bridge_false() {
+        // root=MAC_A, bridge=MAC_B → not root
+        let data = make_rst_bpdu(4096, MAC_A, 4, 8192, MAC_B, 0x8001, 0x3c);
+        let bpdu = parse_bpdu(&data, MAC_B, None).unwrap();
+        assert!(!bpdu.is_root_bridge());
+    }
+
+    // ── timing helpers ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_hello_time_sec() {
+        let data = make_rst_bpdu(4096, MAC_A, 0, 4096, MAC_A, 0x8001, 0x3c);
+        let bpdu = parse_bpdu(&data, MAC_A, None).unwrap();
+        // hello_time=512 → 512/256 = 2.0s
+        assert!((bpdu.hello_time_sec() - 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_max_age_sec() {
+        let data = make_rst_bpdu(4096, MAC_A, 0, 4096, MAC_A, 0x8001, 0x3c);
+        let bpdu = parse_bpdu(&data, MAC_A, None).unwrap();
+        // max_age=5120 → 5120/256 = 20.0s
+        assert!((bpdu.max_age_sec() - 20.0).abs() < 0.01);
+    }
+}
