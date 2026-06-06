@@ -6,7 +6,7 @@ A browser-based STP/RSTP/PVST+ analyzer for network engineers. Drop a PCAP file 
 
 Built in Rust compiled to WebAssembly. No server, no backend, no Node.js.
 
-**Live demo: https://stp-postmortem.casablanque.workers.dev**
+**Live demo: https://stp.postmortem.casablanque.com**
 
 ---
 
