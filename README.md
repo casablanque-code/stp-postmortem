@@ -1,4 +1,4 @@
-# STP Post-Mortem
+# stp-postmortem
 
 **Network Forensics Series** · Part 3 of N
 
