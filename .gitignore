@@ -1,0 +1,18 @@
+# Rust build artifacts
+target/
+crates/parser/target/
+
+# WASM generated files (regenerate with make build)
+
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+/tmp/

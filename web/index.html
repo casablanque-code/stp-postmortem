@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>STP Post-Mortem</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:       #080c0f;
+  --surface:  #0d1419;
+  --surface2: #111c24;
+  --border:   #1a2530;
+  --border2:  #243040;
+  --text:     #c8d8e8;
+  --muted:    #4a6070;
+  --accent:   #00c8ff;
+  --accent2:  #0080b0;
+  --warn:     #ffaa00;
+  --crit:     #ff4444;
+  --ok:       #00dd88;
+  --info:     #6688aa;
+  --mono:     'JetBrains Mono', monospace;
+  --display:  'Syne', sans-serif;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body { background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 13px; line-height: 1.6; min-height: 100vh; overflow-x: hidden; }
+body::before { content: ''; position: fixed; inset: 0; background-image: repeating-linear-gradient(0deg,transparent,transparent 39px,var(--border) 39px,var(--border) 40px),repeating-linear-gradient(90deg,transparent,transparent 39px,var(--border) 39px,var(--border) 40px); opacity: .18; pointer-events: none; z-index: 0; }
+#app { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; padding: 0 24px 80px; }
+header { padding: 48px 0 36px; border-bottom: 1px solid var(--border); margin-bottom: 40px; display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
+.logo { display: flex; flex-direction: column; gap: 4px; }
+.logo-tag { font-size: 10px; font-weight: 600; letter-spacing: .25em; color: var(--accent); text-transform: uppercase; }
+h1 { font-family: var(--display); font-size: clamp(28px,5vw,44px); font-weight: 800; color: #fff; letter-spacing: -.02em; line-height: 1; }
+h1 span { color: var(--accent); }
+.header-meta { text-align: right; color: var(--muted); font-size: 11px; line-height: 1.8; }
+#dropzone { border: 1px dashed var(--border2); border-radius: 4px; padding: 64px 40px; text-align: center; cursor: pointer; transition: border-color .2s,background .2s; background: var(--surface); position: relative; overflow: hidden; }
+#dropzone::after { content: ''; position: absolute; inset: 0; background: radial-gradient(ellipse at 50% 100%,rgba(0,200,255,.04) 0%,transparent 70%); pointer-events: none; }
+#dropzone:hover, #dropzone.drag-over { border-color: var(--accent); background: #0d1820; }
+#dropzone.drag-over { border-style: solid; }
+.drop-icon { font-size: 36px; margin-bottom: 16px; }
+.drop-title { font-family: var(--display); font-size: 18px; font-weight: 700; color: #fff; margin-bottom: 8px; }
+.drop-sub { color: var(--muted); font-size: 12px; }
+.drop-sub strong { color: var(--accent); font-weight: 400; }
+#file-input { display: none; }
+#status { display: none; align-items: center; gap: 12px; padding: 16px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; margin-top: 16px; font-size: 12px; color: var(--muted); }
+#status.visible { display: flex; }
+.spinner { width: 16px; height: 16px; border: 2px solid var(--border2); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; flex-shrink: 0; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.error-box { background: rgba(255,68,68,.08); border: 1px solid rgba(255,68,68,.3); border-radius: 4px; padding: 16px 20px; color: var(--crit); font-size: 12px; margin-top: 16px; display: none; }
+.error-box.visible { display: block; }
+#results { display: none; margin-top: 40px; }
+#results.visible { display: block; }
+.summary-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(160px,1fr)); gap: 12px; margin-bottom: 40px; }
+.stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 20px 16px 16px; position: relative; overflow: hidden; opacity: 0; transform: translateY(12px); animation: fadeUp .4s ease forwards; }
+.stat-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; }
+.stat-card.ok::before   { background: var(--ok); }
+.stat-card.warn::before { background: var(--warn); }
+.stat-card.crit::before { background: var(--crit); }
+.stat-card.info::before { background: var(--accent); }
+.stat-label { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+.stat-value { font-family: var(--display); font-size: 32px; font-weight: 800; line-height: 1; color: #fff; }
+.stat-card.crit .stat-value { color: var(--crit); }
+.stat-card.warn .stat-value { color: var(--warn); }
+.stat-card.ok   .stat-value { color: var(--ok); }
+.stat-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+@keyframes fadeUp { to { opacity: 1; transform: translateY(0); } }
+.section-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.section-title { font-family: var(--display); font-size: 15px; font-weight: 700; color: #fff; letter-spacing: -.01em; }
+.section-count { font-size: 11px; color: var(--muted); background: var(--border); padding: 2px 8px; border-radius: 2px; }
+#rc-section { margin-bottom: 48px; }
+.verdict-bar { padding: 14px 18px; border-radius: 4px; margin-bottom: 20px; font-size: 12px; line-height: 1.5; border-left: 3px solid; opacity: 0; animation: fadeUp .4s ease .1s forwards; }
+.verdict-bar.clean    { background: rgba(0,221,136,.08); border-color: var(--ok);   color: var(--ok); }
+.verdict-bar.warning  { background: rgba(255,170,0,.08); border-color: var(--warn); color: var(--warn); }
+.verdict-bar.critical { background: rgba(255,68,68,.08); border-color: var(--crit); color: var(--crit); }
+.verdict-bar strong { display: block; font-size: 13px; margin-bottom: 2px; }
+.rc-card { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; margin-bottom: 10px; overflow: hidden; opacity: 0; animation: fadeUp .4s ease forwards; }
+.rc-header { display: flex; align-items: center; gap: 12px; padding: 14px 16px; cursor: pointer; transition: background .15s; user-select: none; }
+.rc-header:hover { background: var(--surface2); }
+.rc-sev { font-size: 9px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; padding: 3px 8px; border-radius: 2px; flex-shrink: 0; }
+.rc-sev.Critical { background: rgba(255,68,68,.15); color: var(--crit); }
+.rc-sev.Warning  { background: rgba(255,170,0,.12); color: var(--warn); }
+.rc-sev.Info     { background: rgba(102,136,170,.12); color: var(--info); }
+.rc-headline { font-size: 13px; color: #fff; flex: 1; font-weight: 600; }
+.rc-chevron { color: var(--muted); font-size: 11px; transition: transform .2s; flex-shrink: 0; }
+.rc-card.open .rc-chevron { transform: rotate(180deg); }
+.rc-body { display: none; padding: 0 16px 16px; border-top: 1px solid var(--border); }
+.rc-card.open .rc-body { display: block; }
+.rc-block { margin-top: 14px; }
+.rc-block-title { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+.rc-impact      { padding: 10px 12px; background: rgba(0,200,255,.04); border-left: 2px solid var(--accent2); font-size: 12px; color: var(--text); line-height: 1.6; }
+.rc-remediation { padding: 10px 12px; background: rgba(0,221,136,.04); border-left: 2px solid var(--ok); font-size: 12px; color: var(--text); line-height: 1.6; }
+.secondary-list { list-style: none; padding: 0; }
+.secondary-list li { padding: 3px 0 3px 14px; position: relative; font-size: 12px; color: var(--muted); }
+.secondary-list li::before { content: '→'; position: absolute; left: 0; color: var(--border2); }
+.evidence-list { list-style: none; padding: 0; }
+.evidence-list li { display: flex; gap: 10px; padding: 4px 0; font-size: 11px; border-bottom: 1px solid var(--border); }
+.evidence-list li:last-child { border-bottom: none; }
+.ev-ts   { color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+.ev-type { color: var(--accent); flex-shrink: 0; min-width: 160px; }
+.ev-desc { color: var(--text); }
+.action-plan { list-style: none; padding: 0; }
+.action-plan li { padding: 5px 0; font-size: 12px; color: var(--text); border-bottom: 1px solid var(--border); }
+.action-plan li:last-child { border-bottom: none; }
+.confidence-bar-wrap { margin-top: 14px; }
+.confidence-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.confidence-label { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.confidence-value { font-size: 13px; font-weight: 700; font-family: var(--display); }
+.confidence-value.high   { color: var(--ok); }
+.confidence-value.medium { color: var(--warn); }
+.confidence-value.low    { color: var(--muted); }
+.confidence-track { height: 4px; background: var(--border2); border-radius: 2px; overflow: hidden; }
+.confidence-fill { height: 100%; border-radius: 2px; transition: width .6s ease; }
+.confidence-fill.high   { background: var(--ok); }
+.confidence-fill.medium { background: var(--warn); }
+.confidence-fill.low    { background: var(--muted); }
+.confidence-reason { font-size: 11px; color: var(--muted); margin-top: 5px; line-height: 1.5; }
+.causal-chain { margin-top: 14px; }
+.chain-list { list-style: none; padding: 0; position: relative; padding-left: 20px; }
+.chain-list::before { content: ''; position: absolute; left: 6px; top: 8px; bottom: 8px; width: 1px; background: var(--border2); }
+.chain-item { position: relative; padding: 5px 0 5px 12px; font-size: 11px; line-height: 1.5; }
+.chain-item::before { content: ''; position: absolute; left: -14px; top: 10px; width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--border2); }
+.chain-item.cause::before   { background: var(--crit); border-color: var(--crit); box-shadow: 0 0 4px rgba(255,68,68,.4); }
+.chain-item.effect::before  { background: var(--warn); border-color: var(--warn); }
+.chain-item.context::before { background: var(--info); border-color: var(--info); }
+.chain-ts   { color: var(--muted); margin-right: 8px; }
+.chain-role { font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 1px 5px; border-radius: 2px; margin-right: 6px; }
+.chain-role.cause   { background: rgba(255,68,68,.15); color: var(--crit); }
+.chain-role.effect  { background: rgba(255,170,0,.12); color: var(--warn); }
+.chain-role.context { background: rgba(102,136,170,.12); color: var(--info); }
+.chain-desc { color: var(--text); }
+/* Topology table */
+#topo-section { margin-bottom: 48px; }
+.topo-grid { display: grid; gap: 10px; }
+.topo-row { background: var(--surface); border: 1px solid var(--border); border-radius: 3px; padding: 10px 14px; display: grid; grid-template-columns: 1fr 140px 80px; gap: 12px; align-items: center; font-size: 12px; opacity: 0; animation: fadeUp .35s ease forwards; }
+.topo-row.header { background: transparent; border-color: transparent; color: var(--muted); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; padding-bottom: 4px; animation: none; opacity: 1; }
+.topo-mac  { color: var(--accent); font-family: var(--mono); font-size: 11px; }
+.topo-root { font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 2px 8px; border-radius: 2px; text-align: center; }
+.topo-root.yes { background: rgba(0,221,136,.12); color: var(--ok); }
+.topo-root.no  { background: rgba(102,136,170,.08); color: var(--info); }
+/* Filter bar */
+.filter-bar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.filter-btn { font-family: var(--mono); font-size: 11px; padding: 5px 12px; border-radius: 2px; border: 1px solid var(--border2); background: transparent; color: var(--muted); cursor: pointer; transition: all .15s; letter-spacing: .05em; }
+.filter-btn:hover { border-color: var(--accent2); color: var(--text); }
+.filter-btn.active        { border-color: var(--accent); color: var(--accent); background: rgba(0,200,255,.06); }
+.filter-btn.f-crit.active { border-color: var(--crit);   color: var(--crit);   background: rgba(255,68,68,.06); }
+.filter-btn.f-warn.active { border-color: var(--warn);   color: var(--warn);   background: rgba(255,170,0,.06); }
+.filter-btn.f-info.active { border-color: var(--info);   color: var(--info);   background: rgba(102,136,170,.06); }
+#timeline { position: relative; padding-left: 28px; }
+#timeline::before { content: ''; position: absolute; left: 7px; top: 0; bottom: 0; width: 1px; background: linear-gradient(to bottom,var(--border2),transparent); }
+.event-row { position: relative; margin-bottom: 10px; opacity: 0; transform: translateX(-8px); animation: slideIn .3s ease forwards; }
+@keyframes slideIn { to { opacity: 1; transform: translateX(0); } }
+.event-row::before { content: ''; position: absolute; left: -24px; top: 14px; width: 7px; height: 7px; border-radius: 50%; border: 1px solid var(--border2); background: var(--bg); }
+.event-row.sev-Critical::before { background: var(--crit); border-color: var(--crit); box-shadow: 0 0 6px rgba(255,68,68,.5); }
+.event-row.sev-Warning::before  { background: var(--warn); border-color: var(--warn); }
+.event-row.sev-Info::before     { background: var(--info); border-color: var(--info); }
+.event-card { background: var(--surface); border: 1px solid var(--border); border-radius: 3px; padding: 12px 14px; cursor: pointer; transition: border-color .15s,background .15s; border-left: 2px solid transparent; }
+.event-row.sev-Critical .event-card { border-left-color: var(--crit); }
+.event-row.sev-Warning  .event-card { border-left-color: var(--warn); }
+.event-row.sev-Info     .event-card { border-left-color: var(--info); }
+.event-card:hover { background: var(--surface2); border-color: var(--border2); }
+.event-top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
+.event-type { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; padding: 2px 8px; border-radius: 2px; }
+.sev-Critical .event-type { background: rgba(255,68,68,.15);   color: var(--crit); }
+.sev-Warning  .event-type { background: rgba(255,170,0,.12);   color: var(--warn); }
+.sev-Info     .event-type { background: rgba(102,136,170,.12); color: var(--info); }
+.event-ts      { color: var(--muted); font-size: 11px; margin-left: auto; white-space: nowrap; }
+.event-summary { color: var(--text); font-size: 12px; line-height: 1.5; }
+.event-detail  { display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 12px; line-height: 1.7; }
+.event-detail.open { display: block; }
+.event-detail .explanation { color: var(--text); margin-bottom: 8px; padding: 8px 10px; background: rgba(0,200,255,.04); border-left: 2px solid var(--accent2); font-size: 12px; }
+.kv { display: grid; grid-template-columns: 160px 1fr; gap: 2px 12px; }
+.kv dt { color: var(--muted); }
+.kv dd { color: var(--text); }
+.export-bar { display: flex; gap: 8px; margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--border); }
+.export-btn { font-family: var(--mono); font-size: 11px; padding: 7px 16px; border-radius: 2px; border: 1px solid var(--border2); background: transparent; color: var(--muted); cursor: pointer; transition: all .15s; }
+.export-btn:hover { border-color: var(--accent); color: var(--accent); }
+.empty { text-align: center; padding: 48px; color: var(--muted); font-size: 12px; }
+.empty strong { display: block; color: var(--ok); font-size: 20px; margin-bottom: 8px; font-family: var(--display); }
+footer { margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.badge { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); border: 1px solid var(--accent2); padding: 3px 8px; border-radius: 2px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo">
+      <span class="logo-tag">Network Forensics</span>
+      <h1>STP <span>Post-Mortem</span></h1>
+    </div>
+    <div class="header-meta">Rust + WASM · Zero server<br>PCAP → events · 802.1D · RSTP · PVST+</div>
+  </header>
+
+  <div id="dropzone" role="button" tabindex="0">
+    <div class="drop-icon">🌐</div>
+    <div class="drop-title">Drop your PCAP here</div>
+    <div class="drop-sub">or <strong>click to browse</strong> · .pcap · .pcapng · STP/RSTP/PVST+</div>
+    <input type="file" id="file-input" accept=".pcap,.cap,.pcapng,.ntar">
+  </div>
+
+  <div id="status"><div class="spinner"></div><span id="status-text">Parsing…</span></div>
+  <div class="error-box" id="error-box"></div>
+
+  <div id="results">
+    <div class="summary-grid" id="summary-grid"></div>
+
+    <div id="rc-section">
+      <div class="section-head">
+        <span class="section-title">Root Cause Analysis</span>
+        <span class="section-count" id="rc-count"></span>
+      </div>
+      <div id="verdict-bar" class="verdict-bar"></div>
+      <div id="rc-list"></div>
+      <div id="action-plan-wrap" style="display:none;margin-top:16px">
+        <div class="section-head" style="margin-bottom:12px">
+          <span class="section-title" style="font-size:13px">Action Plan</span>
+        </div>
+        <ul class="action-plan" id="action-plan"></ul>
+      </div>
+    </div>
+
+    <!-- Topology table -->
+    <div id="topo-section" style="display:none;margin-bottom:48px">
+      <div class="section-head">
+        <span class="section-title">Bridge Topology</span>
+        <span class="section-count" id="topo-count"></span>
+      </div>
+      <div class="topo-grid">
+        <div class="topo-row header"><span>Bridge ID</span><span>MAC</span><span>Root?</span></div>
+        <div id="topo-rows"></div>
+      </div>
+    </div>
+
+    <div class="section-head">
+      <span class="section-title">Event Timeline</span>
+      <span class="section-count" id="event-count">0 events</span>
+    </div>
+    <div class="filter-bar" id="filter-bar">
+      <button class="filter-btn active" data-filter="all">All</button>
+      <button class="filter-btn f-crit" data-filter="Critical">Critical</button>
+      <button class="filter-btn f-warn" data-filter="Warning">Warning</button>
+      <button class="filter-btn f-info" data-filter="Info">Info</button>
+    </div>
+    <div id="timeline"></div>
+
+    <div class="export-bar">
+      <button class="export-btn" id="btn-export-json">↓ Export JSON</button>
+      <button class="export-btn" id="btn-export-txt">↓ Export Report (.txt)</button>
+    </div>
+  </div>
+
+  <footer>
+    <span>STP Post-Mortem · IEEE 802.1D / 802.1w / PVST+</span>
+    <span class="badge">⚙ WASM · Rust</span>
+  </footer>
+</div>
+
+<script type="module">
+import init, { analyze_pcap } from './pkg/parser.js';
+await init();
+
+const TYPE_LABELS = {
+  BridgeDiscovered: 'Bridge Found',
+  RootElected:      'Root Elected',
+  RootChanged:      'Root Changed',
+  TopologyChange:   'TC Flag',
+  TcnReceived:      'TCN',
+  TcStorm:          'TC Storm',
+  PortRoleChange:   'Port Role',
+  PortStateChange:  'Port State',
+  InferiorBpdu:     'Inferior BPDU',
+  RootFlapping:     'Root Flapping',
+  BpduReceived:     'BPDU',
+};
+
+const EXPLANATIONS = {
+  BridgeDiscovered: (e) => `New bridge discovered: ${e.bridge_id} (MAC ${e.bridge_mac})${e.is_root ? ' — claims to be Root Bridge' : ''}${e.vlan_id ? ` · VLAN ${e.vlan_id}` : ''}.`,
+  RootElected:      (e) => `Root Bridge elected: priority ${e.root_priority}, MAC ${e.root_mac}${e.vlan_id ? ` for VLAN ${e.vlan_id}` : ''}. All other bridges will calculate shortest path to this bridge.`,
+  RootChanged:      (e) => `Root Bridge changed${e.vlan_id ? ` (VLAN ${e.vlan_id})` : ''}: ${e.old_root} → ${e.new_root} (${e.new_root_mac}). All bridges will reconverge — traffic disruption expected.`,
+  TopologyChange:   (e) => `TC flag set by ${e.sender_mac}${e.vlan_id ? ` (VLAN ${e.vlan_id})` : ''}. This causes all bridges to flush MAC tables, triggering temporary flooding. TC #${e.tc_count} in window.`,
+  TcnReceived:      (e) => `TCN BPDU received from ${e.sender_mac}${e.vlan_id ? ` (VLAN ${e.vlan_id})` : ''}. Non-root bridge requesting topology change propagation to root.`,
+  TcStorm:          (e) => `TC Storm: ${e.tc_count} topology changes in ${(e.window_ms/1000).toFixed(1)}s${e.vlan_id ? ` (VLAN ${e.vlan_id})` : ''}. MAC tables flushed repeatedly — unicast flooding, CPU stress on all bridges.`,
+  PortRoleChange:   (e) => `Port 0x${e.port_id.toString(16)} on ${e.sender_mac} changed role: ${e.old_role} → ${e.new_role}${e.vlan_id ? ` (VLAN ${e.vlan_id})` : ''}.`,
+  PortStateChange:  (e) => `Port 0x${e.port_id.toString(16)} on ${e.sender_mac} changed state: ${e.old_state} → ${e.new_state}${e.vlan_id ? ` (VLAN ${e.vlan_id})` : ''}. RSTP port FSM transition.`,
+  InferiorBpdu:     (e) => `Inferior BPDU from ${e.sender_mac}: claims root ${e.claimed_root} but known root is ${e.actual_root}${e.vlan_id ? ` (VLAN ${e.vlan_id})` : ''}. Possible loop or stale state.`,
+  RootFlapping:     (e) => `Root flapping${e.vlan_id ? ` (VLAN ${e.vlan_id})` : ''}: ${e.change_count} root changes in ${(e.window_ms/1000).toFixed(1)}s. Repeated convergence cycles — severe network disruption.`,
+  BpduReceived:     (e) => `BPDU from ${e.sender_mac}: root=${e.root_id}, cost=${e.root_cost}, bridge=${e.bridge_id}, port=0x${e.port_id.toString(16)}${e.is_rstp ? ' [RSTP]' : ' [STP]'}${e.flags_tc ? ' TC' : ''}${e.vlan_id ? ` VLAN ${e.vlan_id}` : ''}.`,
+};
+
+function eventSummary(type, ev) {
+  const vlan = ev.vlan_id ? ` · VLAN ${ev.vlan_id}` : '';
+  switch(type) {
+    case 'BridgeDiscovered': return `<b>${ev.bridge_id}</b> · ${ev.bridge_mac}${ev.is_root ? ' <b>[ROOT]</b>' : ''}${vlan}`;
+    case 'RootElected':      return `<b>${ev.root_id}</b> · priority ${ev.root_priority}${vlan}`;
+    case 'RootChanged':      return `<b>${ev.old_root}</b> → <b>${ev.new_root}</b>${vlan}`;
+    case 'TopologyChange':   return `from <b>${ev.sender_mac}</b> · TC #${ev.tc_count}${vlan}`;
+    case 'TcnReceived':      return `from <b>${ev.sender_mac}</b>${vlan}`;
+    case 'TcStorm':          return `<b>${ev.tc_count}</b> TC in ${(ev.window_ms/1000).toFixed(1)}s${vlan}`;
+    case 'PortRoleChange':   return `<b>${ev.sender_mac}</b> port 0x${ev.port_id.toString(16)}: ${ev.old_role} → <b>${ev.new_role}</b>${vlan}`;
+    case 'PortStateChange':  return `<b>${ev.sender_mac}</b> port 0x${ev.port_id.toString(16)}: ${ev.old_state} → <b>${ev.new_state}</b>${vlan}`;
+    case 'InferiorBpdu':     return `<b>${ev.sender_mac}</b> claims <b>${ev.claimed_root}</b>${vlan}`;
+    case 'RootFlapping':     return `<b>${ev.change_count}</b> changes in ${(ev.window_ms/1000).toFixed(1)}s${vlan}`;
+    case 'BpduReceived':     return `from <b>${ev.sender_mac}</b> · root ${ev.root_id.split('/')[0]} · cost ${ev.root_cost}${vlan}`;
+    default: return JSON.stringify(ev);
+  }
+}
+
+function formatTs(ts, base) {
+  const rel = (ts - base).toFixed(3);
+  const abs = new Date(ts * 1000).toISOString().replace('T',' ').replace('Z','');
+  return `+${rel}s · ${abs}`;
+}
+
+function renderKV(ev) {
+  const entries = Object.entries(ev).filter(([k]) => k !== 'type' && k !== 'ts');
+  if (!entries.length) return '';
+  return `<dl class="kv">${entries.map(([k,v]) => `<dt>${k}</dt><dd>${v ?? '—'}</dd>`).join('')}</dl>`;
+}
+
+function renderSummary(r) {
+  const s = r.summary;
+  const dur = r.duration_sec < 60 ? `${r.duration_sec.toFixed(1)}s` : `${(r.duration_sec/60).toFixed(1)}m`;
+  const cards = [
+    { label: 'STP Packets',   value: r.stp_packets,      sub: `of ${r.total_packets} total`,    cls: 'info' },
+    { label: 'Duration',      value: dur,                 sub: 'capture window',                 cls: 'info' },
+    { label: 'Bridges',       value: s.bridges_seen,      sub: 'unique MACs',                    cls: 'info' },
+    { label: 'VLANs',         value: s.vlans_seen,        sub: 'PVST+ instances',                cls: 'info' },
+    { label: 'Anomalies',     value: s.anomalies,         sub: 'warn + critical', cls: s.anomalies    > 0 ? 'warn' : 'ok' },
+    { label: 'Root Changes',  value: s.root_changes,      sub: 'reconvergences',  cls: s.root_changes > 0 ? 'warn' : 'ok' },
+    { label: 'TC Events',     value: s.tc_events,         sub: 'topology changes',cls: s.tc_events    > 0 ? 'warn' : 'ok' },
+    { label: 'TC Storms',     value: s.tc_storms,         sub: 'flood threshold', cls: s.tc_storms    > 0 ? 'crit' : 'ok' },
+  ];
+  document.getElementById('summary-grid').innerHTML = cards.map((c,i) => `
+    <div class="stat-card ${c.cls}" style="animation-delay:${i*50}ms">
+      <div class="stat-label">${c.label}</div>
+      <div class="stat-value">${c.value}</div>
+      <div class="stat-sub">${c.sub}</div>
+    </div>`).join('');
+}
+
+function renderRootCause(rc) {
+  const hasCrit = rc.causes.some(c => c.severity === 'Critical');
+  const hasWarn = rc.causes.some(c => c.severity === 'Warning');
+  const cls     = hasCrit ? 'critical' : hasWarn ? 'warning' : 'clean';
+  const vbar    = document.getElementById('verdict-bar');
+  vbar.className = `verdict-bar ${cls}`;
+  vbar.innerHTML = `<strong>${rc.stable ? '✓ Stable' : '✗ Not stable'}</strong>${rc.verdict}`;
+
+  const real = rc.causes.filter(c => c.kind !== 'Clean');
+  document.getElementById('rc-count').textContent = real.length ? `${real.length} issue${real.length>1?'s':''}` : 'clean';
+
+  document.getElementById('rc-list').innerHTML = rc.causes.map((cause, i) => {
+    const secHtml = cause.secondary_effects?.length
+      ? `<div class="rc-block"><div class="rc-block-title">Secondary Effects</div>
+         <ul class="secondary-list">${cause.secondary_effects.map(e=>`<li>${e}</li>`).join('')}</ul></div>` : '';
+    const evBase = cause.evidence?.length
+      ? Math.min(...cause.evidence.map(ev => ev.ts))
+      : (cause.first_seen || 0);
+    const evHtml = cause.evidence?.length
+      ? `<div class="rc-block"><div class="rc-block-title">Evidence</div>
+         <ul class="evidence-list">${cause.evidence.map(ev=>`
+           <li><span class="ev-ts">+${Math.max(0, ev.ts - evBase).toFixed(2)}s</span>
+           <span class="ev-type">${ev.event_type}</span>
+           <span class="ev-desc">${ev.description}</span></li>`).join('')}</ul></div>` : '';
+    const affHtml = cause.affected_vlans?.length
+      ? `<div class="rc-block"><div class="rc-block-title">Affected VLANs</div>
+         <div style="font-size:12px;color:var(--text)">${cause.affected_vlans.join(', ')}</div></div>` : '';
+    const conf = cause.confidence ?? 0;
+    const confCls = conf >= 85 ? 'high' : conf >= 60 ? 'medium' : 'low';
+    const confLabel = conf >= 85 ? 'High confidence' : conf >= 60 ? 'Medium confidence' : 'Low confidence';
+    const confHtml = `<div class="confidence-bar-wrap">
+      <div class="confidence-header">
+        <span class="confidence-label">Detection Confidence</span>
+        <span class="confidence-value ${confCls}">${conf}% — ${confLabel}</span>
+      </div>
+      <div class="confidence-track"><div class="confidence-fill ${confCls}" style="width:${conf}%"></div></div>
+      ${cause.confidence_reason ? `<div class="confidence-reason">${cause.confidence_reason}</div>` : ''}
+    </div>`;
+    const chainHtml = cause.causal_chain?.length
+      ? `<div class="causal-chain"><div class="rc-block-title" style="margin-bottom:8px">Causal Chain</div>
+         <ul class="chain-list">${cause.causal_chain.map(step => {
+           const role = step.role?.toLowerCase() ?? 'context';
+           const rel  = step.ts - (cause.causal_chain[0]?.ts ?? step.ts);
+           return `<li class="chain-item ${role}">
+             <span class="chain-ts">${rel>=0?'+':''}${rel.toFixed(1)}s</span>
+             <span class="chain-role ${role}">${role}</span>
+             <span class="chain-desc">${step.description}</span></li>`;
+         }).join('')}</ul></div>` : '';
+
+    return `<div class="rc-card" style="animation-delay:${i*80}ms">
+      <div class="rc-header" onclick="toggleRc(this)">
+        <span class="rc-sev ${cause.severity}">${cause.severity}</span>
+        <span class="rc-headline">${cause.headline}</span>
+        <span class="rc-chevron">▼</span>
+      </div>
+      <div class="rc-body">
+        ${confHtml}${chainHtml}
+        <div class="rc-block"><div class="rc-block-title">Impact</div>
+          <div class="rc-impact">${cause.impact}</div></div>
+        ${secHtml}${evHtml}${affHtml}
+        <div class="rc-block"><div class="rc-block-title">Remediation</div>
+          <div class="rc-remediation">${cause.remediation}</div></div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const first = document.querySelector('.rc-card');
+  if (first && rc.causes[0]?.severity !== 'Info') first.classList.add('open');
+
+  if (rc.action_plan?.length && rc.action_plan[0] !== 'No action required.') {
+    document.getElementById('action-plan-wrap').style.display = 'block';
+    document.getElementById('action-plan').innerHTML = rc.action_plan.map(s=>`<li>${s}</li>`).join('');
+  }
+}
+
+window.toggleRc = (hdr) => hdr.closest('.rc-card').classList.toggle('open');
+
+function renderTopology(topology, rootCause) {
+  if (!topology?.bridges?.length) return;
+  const section = document.getElementById('topo-section');
+  section.style.display = 'block';
+
+  const rootIds = new Set((topology.roots ?? []).map(r => r.root_id));
+
+  document.getElementById('topo-count').textContent =
+    `${topology.bridges.length} bridge${topology.bridges.length!==1?'s':''}`;
+
+  document.getElementById('topo-rows').innerHTML = topology.bridges.map((b, i) => {
+    const isRoot = rootIds.has(b.bridge_id);
+    return `<div class="topo-row" style="animation-delay:${i*30}ms">
+      <span style="color:var(--text);font-size:12px">${b.bridge_id}</span>
+      <span class="topo-mac">${b.bridge_mac}</span>
+      <span class="topo-root ${isRoot?'yes':'no'}">${isRoot?'ROOT':'—'}</span>
+    </div>`;
+  }).join('');
+}
+
+let currentFilter = 'all', allEvents = [], fullReport = null, baseTs = 0;
+
+function renderTimeline(events) {
+  const visible = currentFilter === 'all' ? events : events.filter(e => e.severity === currentFilter);
+  document.getElementById('event-count').textContent = `${visible.length} of ${events.length} events`;
+  if (!visible.length) {
+    document.getElementById('timeline').innerHTML =
+      `<div class="empty"><strong>✓ All clear</strong>No events matching filter.</div>`;
+    return;
+  }
+  document.getElementById('timeline').innerHTML = visible.map((te, i) => {
+    const evType = te.event.type;
+    return `<div class="event-row sev-${te.severity}" style="animation-delay:${Math.min(i*25,500)}ms">
+      <div class="event-card" onclick="toggleDetail(this)">
+        <div class="event-top">
+          <span class="event-type">${TYPE_LABELS[evType] ?? evType}</span>
+          <span class="event-ts">${formatTs(te.ts, baseTs)}</span>
+        </div>
+        <div class="event-summary">${eventSummary(evType, te.event)}</div>
+        <div class="event-detail">
+          <div class="explanation">${(EXPLANATIONS[evType]??(() =>''))(te.event)}</div>
+          ${renderKV(te.event)}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+window.toggleDetail = (card) => card.querySelector('.event-detail').classList.toggle('open');
+
+function dl(blob, name) {
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: name });
+  a.click(); URL.revokeObjectURL(a.href);
+}
+
+document.getElementById('btn-export-json').addEventListener('click', () => {
+  if (!fullReport) return;
+  dl(new Blob([JSON.stringify(fullReport, null, 2)], {type:'application/json'}), 'stp-postmortem.json');
+});
+
+document.getElementById('btn-export-txt').addEventListener('click', () => {
+  if (!fullReport) return;
+  const rc = fullReport.root_cause, s = fullReport.summary;
+  const lines = [
+    '═══════════════════════════════════════════════════',
+    '  STP POST-MORTEM REPORT',
+    `  ${new Date().toISOString()}`,
+    '═══════════════════════════════════════════════════',
+    '',
+    'SUMMARY',
+    `  STP Packets  : ${fullReport.stp_packets} of ${fullReport.total_packets}`,
+    `  Duration     : ${fullReport.duration_sec.toFixed(1)}s`,
+    `  Bridges      : ${s.bridges_seen}`,
+    `  VLANs        : ${s.vlans_seen}`,
+    `  Root Changes : ${s.root_changes}`,
+    `  TC Events    : ${s.tc_events}`,
+    `  TC Storms    : ${s.tc_storms}`,
+    `  Stable       : ${rc.stable ? 'YES' : 'NO'}`,
+    '',
+    'VERDICT',
+    `  ${rc.verdict}`,
+    '',
+    'ROOT CAUSE ANALYSIS',
+    ...rc.causes.flatMap(c => [
+      '',
+      `  [${c.severity.toUpperCase()}] ${c.headline}`,
+      `  Impact      : ${c.impact}`,
+      `  Remediation : ${c.remediation}`,
+      ...(c.affected_vlans?.length ? [`  VLANs       : ${c.affected_vlans.join(', ')}`] : []),
+    ]),
+    '',
+    'ACTION PLAN',
+    ...(rc.action_plan ?? []).map(a => `  ${a}`),
+    '',
+    'EVENT TIMELINE',
+    ...fullReport.events.map(te => {
+      const rel = (te.ts - baseTs).toFixed(3).padStart(10);
+      return `  +${rel}s  [${te.severity.padEnd(8)}]  ${TYPE_LABELS[te.event.type] ?? te.event.type}`;
+    }),
+    '',
+    '═══════════════════════════════════════════════════',
+  ];
+  dl(new Blob([lines.join('\n')], {type:'text/plain'}), 'stp-postmortem.txt');
+});
+
+document.getElementById('filter-bar').addEventListener('click', e => {
+  const btn = e.target.closest('[data-filter]');
+  if (!btn) return;
+  currentFilter = btn.dataset.filter;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderTimeline(allEvents);
+});
+
+async function processFile(file) {
+  const statusEl = document.getElementById('status');
+  const errorBox = document.getElementById('error-box');
+  const results  = document.getElementById('results');
+  errorBox.classList.remove('visible');
+  results.classList.remove('visible');
+  statusEl.classList.add('visible');
+  document.getElementById('status-text').textContent = `Reading ${file.name} (${(file.size/1024).toFixed(0)} KB)…`;
+  document.getElementById('action-plan-wrap').style.display = 'none';
+  document.getElementById('topo-section').style.display = 'none';
+
+  try {
+    const buf = await file.arrayBuffer();
+    document.getElementById('status-text').textContent = 'Running WASM analyzer…';
+    await new Promise(r => setTimeout(r, 20));
+
+    const report = analyze_pcap(new Uint8Array(buf));
+    fullReport = report;
+    allEvents  = report.events;
+    baseTs     = report.events[0]?.ts ?? 0;
+
+    statusEl.classList.remove('visible');
+    renderSummary(report);
+
+    if (report.stp_packets === 0) {
+      document.getElementById('rc-section').innerHTML = `
+        <div class="verdict-bar warning" style="opacity:1">
+          <strong>⚠ No STP traffic found</strong>
+          This capture contains no STP/RSTP/PVST+ BPDUs.
+          Make sure you captured on a trunk port or access port participating in STP.
+        </div>`;
+      document.getElementById('timeline').innerHTML =
+        '<div class="empty"><strong>No STP packets</strong>Nothing to analyze.</div>';
+      document.getElementById('event-count').textContent = '0 events';
+      results.classList.add('visible');
+      return;
+    }
+
+    renderRootCause(report.root_cause);
+    renderTopology(report.topology, report.root_cause);
+    renderTimeline(allEvents);
+    results.classList.add('visible');
+  } catch(err) {
+    statusEl.classList.remove('visible');
+    errorBox.textContent = `Error: ${err}`;
+    errorBox.classList.add('visible');
+  }
+}
+
+const dz = document.getElementById('dropzone');
+const fi = document.getElementById('file-input');
+dz.addEventListener('click',    () => fi.click());
+dz.addEventListener('keydown',  e => { if (e.key==='Enter'||e.key===' ') fi.click(); });
+fi.addEventListener('change',   e => { if (e.target.files[0]) processFile(e.target.files[0]); });
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+dz.addEventListener('dragleave',() => dz.classList.remove('drag-over'));
+dz.addEventListener('drop', e => {
+  e.preventDefault(); dz.classList.remove('drag-over');
+  if (e.dataTransfer.files[0]) processFile(e.dataTransfer.files[0]);
+});
+</script>
+</body>
+</html>
