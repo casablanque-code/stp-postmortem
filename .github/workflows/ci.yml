@@ -1,24 +1,19 @@
 name: CI
-
 on:
   push:
     branches: [main]
     tags:     ['v*']
   pull_request:
     branches: [main]
-
 jobs:
   # ── Job 1: cargo check + unit tests ───────────────────────────────────────
   test:
     name: Test (native)
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
-
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -28,29 +23,23 @@ jobs:
             crates/parser/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('crates/parser/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
-
       - name: cargo check
         working-directory: crates/parser
         run: cargo check
-
       - name: cargo test
         working-directory: crates/parser
         run: cargo test --lib -- --nocapture
-
   # ── Job 2: WASM build ─────────────────────────────────────────────────────
   build:
     name: Build WASM
     runs-on: ubuntu-latest
     needs: test
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Install Rust stable + wasm32 target
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -60,66 +49,53 @@ jobs:
             crates/parser/target
           key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('crates/parser/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-wasm-
-
-      - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-
+      - name: Install wasm-pack 0.12.1
+        run: cargo install wasm-pack --version 0.12.1 --locked
       - name: Build WASM
         run: wasm-pack build crates/parser --target web --out-dir ../../web/pkg
-
       - name: Upload web artifact
         uses: actions/upload-artifact@v4
         with:
           name: web-${{ github.sha }}
           path: web/
           retention-days: 7
-
   # ── Job 3: Deploy to Cloudflare Workers (main + tags only) ───────────────
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
     needs: build
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Download web artifact
         uses: actions/download-artifact@v4
         with:
           name: web-${{ github.sha }}
           path: web/
-
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
   # ── Job 4: GitHub Release (tags only) ────────────────────────────────────
   release:
     name: Release
     runs-on: ubuntu-latest
     needs: deploy
     if: startsWith(github.ref, 'refs/tags/v')
-
     permissions:
       contents: write
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Download web artifact
         uses: actions/download-artifact@v4
         with:
           name: web-${{ github.sha }}
           path: web/
-
       - name: Create release archive
         run: |
           zip -r stp-postmortem-${{ github.ref_name }}.zip web/ \
             --exclude 'web/pkg/*.wasm.d.ts'
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
