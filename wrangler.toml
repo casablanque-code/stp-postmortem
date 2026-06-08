@@ -1,4 +1,4 @@
-name = "dhcp-postmortem"
+name = "stp-postmortem"
 compatibility_date = "2024-01-01"
 
 [assets]
